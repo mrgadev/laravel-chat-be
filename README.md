@@ -6,7 +6,7 @@ This project is a **realtime live chat backend API** built with **Laravel** and 
 
 ### Key Capabilities
 
-* **Room Management:** Create chat rooms, list rooms along with member roles (`admin` vs. `member`), enforce room `capacity`, and prevent duplicate joins.
+* **Room Management:** Create chat rooms, list rooms along with member roles (`admin` vs. `member`).
 * **Message Persistence & Realtime Broadcast:** Sending a message (`POST /api/messages`) both persists the message in the database and immediately broadcasts a `MessageSent` event (`ShouldBroadcastNow`) over a room-scoped public channel (`chat.room.{roomId}`).
 * **History + Realtime Sync:** Clients fetch initial message history via `GET /api/rooms/{room}/messages` and subscribe to `chat.room.{roomId}` over WebSocket to receive incoming messages in real time.
 * **Optional Sanctum Token Auth:** Supports Laravel Sanctum bearer tokens while allowing flexible `user_id` resolution (`$validated['user_id'] ?? $request->user()?->id`) during testing or incremental adoption.
@@ -35,11 +35,9 @@ The system separates **persistent state & business rules (HTTP / MySQL)** from *
 
 ### Core Components & Responsibilities
 
-* **Controllers (`RoomController`, `MessageController`, `AuthController`):** Validate incoming payloads, enforce membership/capacity/uniqueness rules, query/persist Eloquent models, and trigger broadcast events.
+* **Controllers (`RoomController`, `MessageController`, `AuthController`):** Validate incoming payloads, enforce membership/uniqueness rules, query/persist Eloquent models, and trigger broadcast events.
 * **Event (`App\Events\MessageSent`):** Implements `ShouldBroadcastNow` to push payloads immediately to Reverb without waiting for a queue worker. Broadcasts on `Channel("chat.room.{$message->room_id}")` as event name `message.sent`.
 * **Laravel Reverb:** Acts as the WebSocket server handling client connections, channel subscriptions (`pusher:subscribe`), and broadcasting `message.sent` events to all clients subscribed to a given room channel.
-* **Membership vs. Subscription:**
-* **Room Membership (`POST /api/rooms/{room}/join`):** Database concern stored in the `room_user` pivot table (`role`, `capacity` check, duplicate check, and message-sender membership check).
 * **Realtime Subscription (`chat.room.{roomId}`):** WebSocket transport concern where multiple connected clients subscribe to the same channel to receive pushed `message.sent` events simultaneously.
 
 
@@ -143,9 +141,9 @@ This architecture uses UUID primary keys (`HasUuids`) across core tables and a c
 | Table | Purpose | Key Columns | Relationships |
 | --- | --- | --- | --- |
 | `users` | Stores user accounts | `id` (UUID PK), `name`, `email`, `password`, `timestamps` | Has many `rooms` created (`created_by`), belongs to many `rooms` via `room_user`, has many `messages` |
-| `rooms` | Stores chat rooms | `id` (UUID PK), `name`, `description` (nullable), `capacity` (int), `created_by` (UUID FK -> `users.id`), `timestamps` | Belongs to creator `user` (`created_by`), belongs to many `users` via `room_user`, has many `messages` |
+| `rooms` | Stores chat rooms | `id` (UUID PK), `name`, `description` (nullable), `created_by` (UUID FK -> `users.id`), `timestamps` | Belongs to creator `user` (`created_by`), belongs to many `users` via `room_user`, has many `messages` |
 | `room_user` | Pivot table for room membership & roles | `id` (UUID PK), `room_id` (UUID FK), `user_id` (UUID FK), `role` (`admin` / `member`), `last_read_at` (nullable), `timestamps` | Unique composite index on `(room_id, user_id)` |
-| `messages` | Stores persisted chat messages | `id` (UUID PK), `room_id` (UUID FK -> `rooms.id`), `user_id` (UUID FK -> `users.id`), `body` (text), `timestamps` | Belongs to `room` and `user` |
+| `messages` | Stores persisted chat messages | `id` (UUID PK), `room_id` (UUID FK -> `rooms.id`), `user_id` (UUID FK -> `users.id`), `content` (text), `timestamps` | Belongs to `room` and `user` |
 
 ### Migration Examples
 
@@ -166,7 +164,6 @@ return new class extends Migration
             $table->uuid('id')->primary();
             $table->string('name');
             $table->text('description')->nullable();
-            $table->unsignedInteger('capacity')->default(50);
             $table->foreignUuid('created_by')->constrained('users')->cascadeOnDelete();
             $table->timestamps();
         });
@@ -230,7 +227,7 @@ return new class extends Migration
             $table->uuid('id')->primary();
             $table->foreignUuid('room_id')->constrained('rooms')->cascadeOnDelete();
             $table->foreignUuid('user_id')->constrained('users')->cascadeOnDelete();
-            $table->text('body');
+            $table->text('content');
             $table->timestamps();
         });
     }
@@ -311,7 +308,7 @@ class MessageSent implements ShouldBroadcastNow
         return [
             'id' => $this->message->id,
             'room_id' => $this->message->room_id,
-            'body' => $this->message->body,
+            'content' => $this->message->content,
             'created_at' => $this->message->created_at?->toISOString(),
             'user' => [
                 'id' => $this->message->user->id,
@@ -431,7 +428,6 @@ Common Headers:
       "id": "01a2072f-3316-7353-9c04-4b2444a96051",
       "name": "Laravel Study Room",
       "description": "Testing realtime events",
-      "capacity": 20,
       "members_count": 2,
       "created_by": "01a2072f-0c92-7a6a-87be-aae26e1d1f39",
       "creator": {
@@ -469,7 +465,6 @@ Common Headers:
 {
   "name": "Laravel Study Room",
   "description": "Testing realtime events",
-  "capacity": 20,
   "user_id": "01a2072f-0c92-7a6a-87be-aae26e1d1f39"
 }
 
@@ -484,7 +479,6 @@ Common Headers:
     "id": "01a2072f-3316-7353-9c04-4b2444a96051",
     "name": "Laravel Study Room",
     "description": "Testing realtime events",
-    "capacity": 20,
     "created_by": "01a2072f-0c92-7a6a-87be-aae26e1d1f39"
   }
 }
@@ -493,40 +487,7 @@ Common Headers:
 
 
 
-### 7.5 Join Room (Assigned `member` Role)
-
-* **Endpoint:** `POST /api/rooms/{room}/join`
-* **Request Body:**
-```json
-{
-  "user_id": "01a2072f-1111-7aaa-87be-aae26e1d9999"
-}
-
-```
-
-
-* **Response (`201 Created`):**
-```json
-{
-  "message": "Joined room successfully",
-  "data": {
-    "room_id": "01a2072f-3316-7353-9c04-4b2444a96051",
-    "user_id": "01a2072f-1111-7aaa-87be-aae26e1d9999",
-    "name": "Siti",
-    "role": "member"
-  }
-}
-
-```
-
-
-* **Error Responses:**
-* `409 Conflict` — User is already a member of the room.
-* `422 Unprocessable Entity` — Room has reached its maximum `capacity`.
-
-
-
-### 7.6 Get Room Messages
+### 7.5 Get Room Messages
 
 * **Endpoint:** `GET /api/rooms/{room}/messages`
 * **Response (`200 OK`):**
@@ -538,7 +499,7 @@ Common Headers:
       "id": "01a2072f-9999-7bbb-87be-aae26e1d1234",
       "room_id": "01a2072f-3316-7353-9c04-4b2444a96051",
       "user_id": "01a2072f-0c92-7a6a-87be-aae26e1d1f39",
-      "body": "Hello everyone!",
+      "content": "Hello everyone!",
       "created_at": "2026-11-23T07:05:00.000000Z",
       "user": {
         "id": "01a2072f-0c92-7a6a-87be-aae26e1d1f39",
@@ -552,7 +513,7 @@ Common Headers:
 
 
 
-### 7.7 Send Message & Broadcast Event
+### 7.6 Send Message & Broadcast Event
 
 * **Endpoint:** `POST /api/messages`
 * **Request Body:**
@@ -560,7 +521,7 @@ Common Headers:
 {
   "room_id": "01a2072f-3316-7353-9c04-4b2444a96051",
   "user_id": "01a2072f-0c92-7a6a-87be-aae26e1d1f39",
-  "body": "Hello everyone!"
+  "content": "Hello everyone!"
 }
 
 ```
@@ -574,7 +535,7 @@ Common Headers:
     "id": "01a2072f-9999-7bbb-87be-aae26e1d1234",
     "room_id": "01a2072f-3316-7353-9c04-4b2444a96051",
     "user_id": "01a2072f-0c92-7a6a-87be-aae26e1d1f39",
-    "body": "Hello everyone!",
+    "content": "Hello everyone!",
     "user": {
       "id": "01a2072f-0c92-7a6a-87be-aae26e1d1f39",
       "name": "Budi"
@@ -590,7 +551,7 @@ Common Headers:
 {
   "id": "01a2072f-9999-7bbb-87be-aae26e1d1234",
   "room_id": "01a2072f-3316-7353-9c04-4b2444a96051",
-  "body": "Hello everyone!",
+  "content": "Hello everyone!",
   "created_at": "2026-11-23T07:05:00.000000Z",
   "user": {
     "id": "01a2072f-0c92-7a6a-87be-aae26e1d1f39",
@@ -599,7 +560,3 @@ Common Headers:
 }
 
 ```
-
-
-* **Error Response:**
-* `403 Forbidden` — User is not a member of the room (`User must join the room before sending messages`).
