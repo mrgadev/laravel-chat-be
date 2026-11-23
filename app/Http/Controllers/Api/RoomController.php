@@ -8,6 +8,7 @@ use App\Models\Room;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Arr;
 
 class RoomController extends Controller
 {
@@ -35,7 +36,7 @@ class RoomController extends Controller
                         return [
                             'id' => $user->id,
                             'name' => $user->name,
-                            'role' => $user->pivot->role, // 'admin' atau 'member'
+                            'role' => $user->pivot->role, // 'admin' or 'member'
                             'joined_at' => $user->pivot->created_at?->toISOString(),
                         ];
                     })->values(),
@@ -59,7 +60,7 @@ class RoomController extends Controller
         $room = Room::create([
             'name' => $data['name'],
             'description' => $data['description'] ?? null,
-            'created_by' => $data['user_id'],
+            'created_by' => Arr::get($data, 'user_id') ?? $request->user()->id,
         ]);
 
         $room->users()->attach($data['user_id'], [
@@ -80,11 +81,11 @@ class RoomController extends Controller
      */
     public function join(Request $request, Room $room): JsonResponse
     {
-        $validated = $request->validate([
-            'user_id' => ['required', 'string', 'exists:users,id'],
+        $data = $request->validate([
+            'user_id' => ['nullable', 'string', 'exists:users,id'],
         ]);
 
-        $userId = $validated['user_id'];
+        $userId = $data['user_id'] ?? $request->user()->id;;
 
         // 1. Check if user already joined room
         $alreadyJoined = $room->users()

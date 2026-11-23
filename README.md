@@ -1,115 +1,100 @@
-# Live Chat MVP (Laravel + Reverb) — Comprehensive Documentation
+# Laravel Realtime Live Chat API — Comprehensive Documentation
 
 ## 1. Project Overview
 
-This project is a **real-time Live Chat MVP** built with **Laravel** and **Laravel Reverb** for learning RESTful API design, relational database modeling/pivot relationships, event broadcasting, and WebSocket room subscriptions.
+This project is a **realtime live chat backend API** built with **Laravel** and **Laravel Reverb** (WebSocket server) for learning and testing event-driven architecture, RESTful endpoints, room membership rules, and realtime broadcasting.
 
-### Key Characteristics & Scope
+### Key Capabilities
 
-* **Learning-Focused MVP**: Designed to demonstrate how HTTP endpoints and WebSocket events work together without overcomplicating early iterations.
-* **No Authentication Initially**: Users and room memberships are referenced via `user_id` and `room_id` (UUIDs) to keep testing straightforward in tools like Postman.
-* **Public Channel Broadcasting**: Uses public broadcast channels (`chat.room.{roomId}`) over the Pusher protocol via Laravel Reverb.
-* **Immediate Message Delivery**: Creating a message via `POST /api/messages` immediately persists it to the database and dispatches a `MessageSent` (`ShouldBroadcastNow`) event to connected subscribers.
-* **Room Membership & Capacity Rules**: Creators are assigned the `admin` role in the pivot table; joining users receive the `member` role, subject to duplicate checks and room `capacity` limits.
+* **Room Management:** Create chat rooms, list rooms along with member roles (`admin` vs. `member`), enforce room `capacity`, and prevent duplicate joins.
+* **Message Persistence & Realtime Broadcast:** Sending a message (`POST /api/messages`) both persists the message in the database and immediately broadcasts a `MessageSent` event (`ShouldBroadcastNow`) over a room-scoped public channel (`chat.room.{roomId}`).
+* **History + Realtime Sync:** Clients fetch initial message history via `GET /api/rooms/{room}/messages` and subscribe to `chat.room.{roomId}` over WebSocket to receive incoming messages in real time.
+* **Optional Sanctum Token Auth:** Supports Laravel Sanctum bearer tokens while allowing flexible `user_id` resolution (`$validated['user_id'] ?? $request->user()?->id`) during testing or incremental adoption.
 
 ---
 
 ## 2. Architecture Explanation
 
-The system separates **persistent state & business rules (HTTP REST API)** from **real-time fan-out delivery (Laravel Events + Reverb WebSocket server)**.
+The system separates **persistent state & business rules (HTTP / MySQL)** from **realtime event fan-out (Laravel Events / Reverb WebSockets)**:
 
-### Core Components
+```text
++-------------------+        HTTP REST         +------------------------+
+| Client / Postman  | -------------------------> | Laravel API Controllers|
+|  (HTTP + WS)      | <------------------------- | (Room, Message, Auth)  |
++-------------------+      JSON Responses        +------------------------+
+          |                                           |             |
+          | WebSocket (Pusher Protocol)               | Eloquent    | dispatch
+          | subscribe: chat.room.{id}                 |             v
+          v                                           v         +------------------+
++-------------------+  broadcast payload (JSON)  +---------+ | MessageSent      |
+|  Laravel Reverb   | <------------------------- |  MySQL  | | (ShouldBroadcast |
+| (WebSocket Srver) |     event: message.sent    +---------+ |  Now)            |
++-------------------+                                          +------------------+
 
-1. **REST API Layer (`routes/api.php` & Controllers)**:
-* `RoomController`: Handles listing rooms (with creator and member roles), creating rooms (assigning creator as `admin`), and joining rooms (enforcing duplicate and `capacity` rules).
-* `MessageController`: Handles fetching room message history (`GET /api/rooms/{room}/messages`) and sending new messages (`POST /api/messages`) after verifying room membership.
+```
+
+### Core Components & Responsibilities
+
+* **Controllers (`RoomController`, `MessageController`, `AuthController`):** Validate incoming payloads, enforce membership/capacity/uniqueness rules, query/persist Eloquent models, and trigger broadcast events.
+* **Event (`App\Events\MessageSent`):** Implements `ShouldBroadcastNow` to push payloads immediately to Reverb without waiting for a queue worker. Broadcasts on `Channel("chat.room.{$message->room_id}")` as event name `message.sent`.
+* **Laravel Reverb:** Acts as the WebSocket server handling client connections, channel subscriptions (`pusher:subscribe`), and broadcasting `message.sent` events to all clients subscribed to a given room channel.
+* **Membership vs. Subscription:**
+* **Room Membership (`POST /api/rooms/{room}/join`):** Database concern stored in the `room_user` pivot table (`role`, `capacity` check, duplicate check, and message-sender membership check).
+* **Realtime Subscription (`chat.room.{roomId}`):** WebSocket transport concern where multiple connected clients subscribe to the same channel to receive pushed `message.sent` events simultaneously.
 
 
-2. **Database & Eloquent Layer**:
-* `User`, `Room`, `Message`, and custom pivot `RoomUser` models manage relationships, UUID keys, and pivot metadata (`role`, `last_read_at`).
-
-
-3. **Event & Broadcasting Layer**:
-* `MessageSent` implements `ShouldBroadcastNow`, targets `Channel("chat.room.{$message->room_id}")`, names the event `message.sent`, and shapes the broadcast payload via `broadcastWith()`.
-
-
-4. **WebSocket Server Layer (Laravel Reverb)**:
-* Maintains active WebSocket connections from clients (e.g., Postman WebSocket tabs or browser clients), processes `pusher:subscribe` frames for `chat.room.{roomId}`, and pushes `message.sent` payloads to all active subscribers on that channel.
-
-
-
-### Typical Client Flow
-
-1. **Membership**: User creates a room (`POST /api/rooms` → `role: admin`) or joins an existing room (`POST /api/rooms/{room}/join` → `role: member`).
-2. **Initial History**: Client fetches existing messages via `GET /api/rooms/{room}/messages`.
-3. **Real-Time Subscription**: Client connects to the Reverb WebSocket endpoint and subscribes to `chat.room.{roomId}`.
-4. **Send & Broadcast**: A member calls `POST /api/messages`. Laravel stores the record in `messages` and broadcasts `MessageSent` to Reverb, which immediately delivers it to all clients subscribed to `chat.room.{roomId}`.
-
-*(Note: `POST /api/rooms/{room}/join` manages database membership and authorization rules—it does not open or subscribe a WebSocket connection on its own.)*
 
 ---
 
 ## 3. Installation & Setup Guide
 
-1. **Install PHP & Laravel Dependencies**
-Ensure PHP and Composer are installed, then install project dependencies:
+1. **Create / enter the Laravel project:**
 ```bash
-composer install
+composer create-project laravel/laravel live-chat-api
+cd live-chat-api
 
 ```
 
 
-2. **Install Broadcasting & Laravel Reverb**
-Scaffold broadcasting configuration and install Laravel Reverb:
+2. **Install dependencies (Sanctum API & Broadcasting / Reverb):**
 ```bash
+php artisan install:api
 php artisan install:broadcasting
 
 ```
 
 
-If Reverb is not yet installed, ensure the package is present and initialized:
+*(If Reverb is not installed yet, run `composer require laravel/reverb` and `php artisan reverb:install`.)*
+3. **Configure `.env` and clear cached config:**
 ```bash
-composer require laravel/reverb
-php artisan reverb:install
-
-```
-
-
-3. **Generate Application Key & Clear Caches**
-```bash
+cp .env.example .env
 php artisan key:generate
 php artisan config:clear
 
 ```
 
 
-4. **Run Database Migrations**
+4. **Run database migrations:**
 ```bash
 php artisan migrate
 
 ```
 
 
-5. **Run Development & WebSocket Servers (Two Terminals)**
-* **Terminal 1 (Laravel HTTP API):**
+5. **Run the application and WebSocket server (in separate terminals):**
 ```bash
+# Terminal 1: HTTP API Server
 php artisan serve
 
-```
-
-
-* **Terminal 2 (Laravel Reverb WebSocket Server):**
-```bash
+# Terminal 2: Reverb WebSocket Server
 php artisan reverb:start --debug
 
 ```
 
 
-
-
-6. **Run Automated Feature Tests (Optional)**
+6. **Run automated feature tests:**
 ```bash
-php artisan test --filter=LiveChatFeatureTest
+php artisan test
 
 ```
 
@@ -119,10 +104,10 @@ php artisan test --filter=LiveChatFeatureTest
 
 ## 4. Environment Configuration
 
-Configure your `.env` file with your database credentials, broadcast driver, and Reverb settings:
+Configure your `.env` file with database, broadcasting, and Reverb credentials:
 
 ```env
-APP_NAME="Live Chat MVP"
+APP_NAME="Laravel Live Chat API"
 APP_ENV=local
 APP_DEBUG=true
 APP_URL=http://127.0.0.1:8000
@@ -136,82 +121,218 @@ DB_PASSWORD=
 
 BROADCAST_CONNECTION=reverb
 
-REVERB_APP_ID=my-app-id
-REVERB_APP_KEY=my-app-key
-REVERB_APP_SECRET=my-app-secret
+REVERB_APP_ID=live-chat-app
+REVERB_APP_KEY=live-chat-key
+REVERB_APP_SECRET=live-chat-secret
 REVERB_HOST="127.0.0.1"
 REVERB_PORT=8080
 REVERB_SCHEME=http
 
 ```
 
-Whenever you modify `.env`, run:
+> **Testing Note:** Configure `phpunit.xml` (or `.env.testing`) to use a dedicated testing database or SQLite `:memory:` so `RefreshDatabase` does not wipe local development records.
 
-```bash
-php artisan config:clear
+---
+
+## 5. Database Schema & Migration Instructions
+
+This architecture uses UUID primary keys (`HasUuids`) across core tables and a custom pivot model (`RoomUser`) so `belongsToMany()->attach()` automatically populates the `id` UUID column on `room_user`.
+
+### Schema Overview
+
+| Table | Purpose | Key Columns | Relationships |
+| --- | --- | --- | --- |
+| `users` | Stores user accounts | `id` (UUID PK), `name`, `email`, `password`, `timestamps` | Has many `rooms` created (`created_by`), belongs to many `rooms` via `room_user`, has many `messages` |
+| `rooms` | Stores chat rooms | `id` (UUID PK), `name`, `description` (nullable), `capacity` (int), `created_by` (UUID FK -> `users.id`), `timestamps` | Belongs to creator `user` (`created_by`), belongs to many `users` via `room_user`, has many `messages` |
+| `room_user` | Pivot table for room membership & roles | `id` (UUID PK), `room_id` (UUID FK), `user_id` (UUID FK), `role` (`admin` / `member`), `last_read_at` (nullable), `timestamps` | Unique composite index on `(room_id, user_id)` |
+| `messages` | Stores persisted chat messages | `id` (UUID PK), `room_id` (UUID FK -> `rooms.id`), `user_id` (UUID FK -> `users.id`), `body` (text), `timestamps` | Belongs to `room` and `user` |
+
+### Migration Examples
+
+#### 1. `rooms` Migration
+
+```php
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    public function up(): void
+    {
+        Schema::create('rooms', function (Blueprint $table) {
+            $table->uuid('id')->primary();
+            $table->string('name');
+            $table->text('description')->nullable();
+            $table->unsignedInteger('capacity')->default(50);
+            $table->foreignUuid('created_by')->constrained('users')->cascadeOnDelete();
+            $table->timestamps();
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::dropIfExists('rooms');
+    }
+};
 
 ```
 
----
+#### 2. `room_user` Pivot Migration
 
-## 5. Database Migration Instructions
+```php
+<?php
 
-Ensure your migrations define UUID primary/foreign keys consistently across tables and handle the `room_user` pivot primary key properly so `attach()` does not fail with missing `id` defaults.
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
 
-### Pivot Key Design (`room_user`)
+return new class extends Migration
+{
+    public function up(): void
+    {
+        Schema::create('room_user', function (Blueprint $table) {
+            $table->uuid('id')->primary();
+            $table->foreignUuid('room_id')->constrained('rooms')->cascadeOnDelete();
+            $table->foreignUuid('user_id')->constrained('users')->cascadeOnDelete();
+            $table->string('role')->default('member');
+            $table->timestamp('last_read_at')->nullable();
+            $table->timestamps();
 
-* **Custom Pivot Model with `HasUuids` (`app/Models/RoomUser.php`)**: If `room_user` includes a UUID `id` column (`$incrementing = false`, `$keyType = 'string'`), bind it to the `belongsToMany` relationship via `->using(RoomUser::class)` so Laravel automatically generates UUIDs on `attach()`.
-* **Composite Primary Key Alternative**: If `room_user` does not need a separate `id` column, define `$table->primary(['room_id', 'user_id']);` in the `room_user` migration instead.
+            $table->unique(['room_id', 'user_id']);
+        });
+    }
 
-### Running & Resetting Migrations
-
-```bash
-# Run pending migrations
-php artisan migrate
-
-# Fresh migrate during local MVP development (destroys existing data)
-php artisan migrate:fresh
+    public function down(): void
+    {
+        Schema::dropIfExists('room_user');
+    }
+};
 
 ```
 
+#### 3. `messages` Migration
+
+```php
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    public function up(): void
+    {
+        Schema::create('messages', function (Blueprint $table) {
+            $table->uuid('id')->primary();
+            $table->foreignUuid('room_id')->constrained('rooms')->cascadeOnDelete();
+            $table->foreignUuid('user_id')->constrained('users')->cascadeOnDelete();
+            $table->text('body');
+            $table->timestamps();
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::dropIfExists('messages');
+    }
+};
+
+```
+
+### Custom Pivot Model (`app/Models/RoomUser.php`)
+
+```php
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Concerns\HasUuids;
+use Illuminate\Database\Eloquent\Relations\Pivot;
+
+class RoomUser extends Pivot
+{
+    use HasUuids;
+
+    protected $table = 'room_user';
+
+    public $incrementing = false;
+
+    protected $keyType = 'string';
+}
+
+```
+
+Ensure the `belongsToMany` relationship on `Room` and `User` uses `->using(RoomUser::class)` and includes `->withPivot(['role', 'last_read_at'])->withTimestamps()`.
+
 ---
 
-## 6. Database Schema Explanation
+## 6. Broadcast & WebSocket Setup
 
-| Table | Key Columns | Purpose & Relationships |
-| --- | --- | --- |
-| `users` | `id` (UUID PK), `name`, `email`, `password`, `timestamps` | Stores user records. Has many created rooms (`created_by`), many joined rooms via `room_user`, and many sent `messages`. |
-| `rooms` | `id` (UUID PK), `name`, `description` (nullable), `capacity` (nullable/int), `created_by` (UUID FK → `users.id`), `timestamps` | Represents chat rooms. Belongs to a creator (`User`) via `created_by`, has many members (`User`) via `room_user`, and has many `messages`. |
-| `room_user` | `id` (UUID PK, if using `RoomUser` pivot) or composite PK (`room_id`, `user_id`), `room_id` (UUID FK → `rooms.id`), `user_id` (UUID FK → `users.id`), `role` (`admin` | `member`), `last_read_at` (nullable timestamp), `timestamps` | Pivot table linking `users` and `rooms`. Tracks each participant's `role` (`admin` for room creator, `member` for joined users) and enforces unique membership per room. |
-| `messages` | `id` (UUID PK), `room_id` (UUID FK → `rooms.id`), `user_id` (UUID FK → `users.id`), `body` (text), `timestamps` | Stores chat message history. Belongs to one `Room` and one `User` (sender). |
+### `MessageSent` Event (`app/Events/MessageSent.php`)
 
----
+```php
+<?php
 
-## 7. Broadcast / WebSocket Setup
+namespace App\Events;
 
-### Event Configuration (`app/Events/MessageSent.php`)
+use App\Models\Message;
+use Illuminate\Broadcasting\Channel;
+use Illuminate\Broadcasting\InteractsWithSockets;
+use Illuminate\Contracts\Broadcasting\ShouldBroadcastNow;
+use Illuminate\Foundation\Events\Dispatchable;
+use Illuminate\Queue\SerializesModels;
 
-* Implements `ShouldBroadcastNow` so events are pushed immediately to Reverb without waiting for a queue worker.
-* `broadcastOn()` returns `[new Channel("chat.room.{$this->message->room_id}")]`.
-* `broadcastAs()` returns `'message.sent'`.
-* `broadcastWith()` broadcasts a structured payload containing `id`, `room_id`, `body`, `created_at`, and `user` (`id`, `name`).
+class MessageSent implements ShouldBroadcastNow
+{
+    use Dispatchable, InteractsWithSockets, SerializesModels;
 
-### Channel Authorization (`routes/channels.php`)
+    public function __construct(public Message $message)
+    {
+    }
 
-Because `chat.room.{roomId}` uses a **public channel** (`Channel`) for this unauthenticated MVP stage, no private/presence channel auth callback is required for subscription.
+    public function broadcastOn(): array
+    {
+        return [
+            new Channel("chat.room.{$this->message->room_id}"),
+        ];
+    }
 
-### Connecting & Subscribing in Postman
+    public function broadcastAs(): string
+    {
+        return 'message.sent';
+    }
 
-1. Open a **WebSocket** request tab in Postman.
-2. Connect to:
+    public function broadcastWith(): array
+    {
+        return [
+            'id' => $this->message->id,
+            'room_id' => $this->message->room_id,
+            'body' => $this->message->body,
+            'created_at' => $this->message->created_at?->toISOString(),
+            'user' => [
+                'id' => $this->message->user->id,
+                'name' => $this->message->user->name,
+            ],
+        ];
+    }
+}
+
+```
+
+### Testing Realtime Broadcast in Postman
+
+1. Open a **WebSocket Request** in Postman and connect to:
 ```text
-ws://127.0.0.1:8080/app/my-app-key?protocol=7&client=postman&version=7.0
+ws://127.0.0.1:8080/app/live-chat-key?protocol=7&client=postman&version=7.0
 
 ```
 
 
-*(Replace `my-app-key`, host, and port with your `.env` values.)*
-3. Once **Connected**, send a Pusher protocol subscription frame (replace `<ROOM_ID>` with a valid room UUID):
+2. Once **Connected**, send a subscription frame for your target room channel:
 ```json
 {
   "event": "pusher:subscribe",
@@ -223,28 +344,93 @@ ws://127.0.0.1:8080/app/my-app-key?protocol=7&client=postman&version=7.0
 ```
 
 
-4. Confirm `pusher_internal:subscription_succeeded` is received. Trigger `POST /api/messages` from an HTTP tab to observe `message.sent` arrive in real time across all subscribed WebSocket clients.
+3. Confirm `pusher_internal:subscription_succeeded` is returned.
+4. Open additional WebSocket tabs for other simulated clients subscribed to the same `chat.room.<ROOM_ID>`, then send `POST /api/messages` via HTTP. All subscribed clients receive the `message.sent` payload instantaneously.
 
 ---
 
-## 8. API Documentation (With Request & Response Examples)
+## 7. API Documentation (Requests & Responses)
 
 Base URL: `[http://127.0.0.1:8000/api](http://127.0.0.1:8000/api)`
 
-Recommended header for JSON validation errors: `Accept: application/json`
+Common Headers:
 
-### 8.1 List Rooms
+* `Accept: application/json`
+* `Content-Type: application/json`
+* `Authorization: Bearer <TOKEN>` *(required when routes are protected with `auth:sanctum`)*
+
+> **Flexible `user_id` Pattern:** When `user_id` is validated as `nullable` in controllers, `$userId = $validated['user_id'] ?? $request->user()?->id;` uses the explicit payload `user_id` if provided, falling back to the authenticated Sanctum user if omitted.
+
+### 7.1 Register User
+
+* **Endpoint:** `POST /api/register`
+* **Request Body:**
+```json
+{
+  "name": "Budi",
+  "email": "budi@example.com",
+  "password": "secret123"
+}
+
+```
+
+
+* **Response (`201 Created`):**
+```json
+{
+  "message": "Registered successfully",
+  "token": "1|laravel_sanctum_token_example",
+  "user": {
+    "id": "01a2072f-0c92-7a6a-87be-aae26e1d1f39",
+    "name": "Budi",
+    "email": "budi@example.com"
+  }
+}
+
+```
+
+
+
+### 7.2 Login User
+
+* **Endpoint:** `POST /api/login`
+* **Request Body:**
+```json
+{
+  "email": "budi@example.com",
+  "password": "secret123"
+}
+
+```
+
+
+* **Response (`200 OK`):**
+```json
+{
+  "message": "Login successful",
+  "token": "2|laravel_sanctum_token_example",
+  "user": {
+    "id": "01a2072f-0c92-7a6a-87be-aae26e1d1f39",
+    "name": "Budi",
+    "email": "budi@example.com"
+  }
+}
+
+```
+
+
+
+### 7.3 List Rooms with Member Roles
 
 * **Endpoint:** `GET /api/rooms`
-* **Description:** Returns rooms along with creator info, member count, and each member's `role` (`admin` or `member`).
-* **Example Response (`200 OK`):**
+* **Response (`200 OK`):**
 ```json
 {
   "data": [
     {
       "id": "01a2072f-3316-7353-9c04-4b2444a96051",
-      "name": "Laravel Discussion",
-      "description": "Learning events and APIs",
+      "name": "Laravel Study Room",
+      "description": "Testing realtime events",
       "capacity": 20,
       "members_count": 2,
       "created_by": "01a2072f-0c92-7a6a-87be-aae26e1d1f39",
@@ -275,15 +461,14 @@ Recommended header for JSON validation errors: `Accept: application/json`
 
 
 
-### 8.2 Create Room
+### 7.4 Create Room (Creator Assigned `admin` Role)
 
 * **Endpoint:** `POST /api/rooms`
-* **Description:** Creates a new room and attaches `user_id` to `room_user` with `role = admin`.
-* **Example Request Body:**
+* **Request Body:**
 ```json
 {
-  "name": "Laravel Discussion",
-  "description": "Learning events and APIs",
+  "name": "Laravel Study Room",
+  "description": "Testing realtime events",
   "capacity": 20,
   "user_id": "01a2072f-0c92-7a6a-87be-aae26e1d1f39"
 }
@@ -291,18 +476,16 @@ Recommended header for JSON validation errors: `Accept: application/json`
 ```
 
 
-* **Example Response (`201 Created`):**
+* **Response (`201 Created`):**
 ```json
 {
   "message": "Room created successfully",
   "data": {
     "id": "01a2072f-3316-7353-9c04-4b2444a96051",
-    "name": "Laravel Discussion",
-    "description": "Learning events and APIs",
+    "name": "Laravel Study Room",
+    "description": "Testing realtime events",
     "capacity": 20,
-    "created_by": "01a2072f-0c92-7a6a-87be-aae26e1d1f39",
-    "created_at": "2026-11-23T06:54:23.000000Z",
-    "updated_at": "2026-11-23T06:54:23.000000Z"
+    "created_by": "01a2072f-0c92-7a6a-87be-aae26e1d1f39"
   }
 }
 
@@ -310,11 +493,10 @@ Recommended header for JSON validation errors: `Accept: application/json`
 
 
 
-### 8.3 Join Room
+### 7.5 Join Room (Assigned `member` Role)
 
 * **Endpoint:** `POST /api/rooms/{room}/join`
-* **Description:** Adds a user to the room as `member` after checking for duplicate membership and room `capacity`.
-* **Example Request Body:**
+* **Request Body:**
 ```json
 {
   "user_id": "01a2072f-1111-7aaa-87be-aae26e1d9999"
@@ -323,7 +505,7 @@ Recommended header for JSON validation errors: `Accept: application/json`
 ```
 
 
-* **Example Response (`201 Created`):**
+* **Response (`201 Created`):**
 ```json
 {
   "message": "Joined room successfully",
@@ -339,43 +521,25 @@ Recommended header for JSON validation errors: `Accept: application/json`
 
 
 * **Error Responses:**
-* `409 Conflict` (duplicate join):
-```json
-{
-  "message": "User is already a member of this room"
-}
-
-```
-
-
-* `422 Unprocessable Entity` (room at capacity):
-```json
-{
-  "message": "Room has reached its maximum capacity"
-}
-
-```
+* `409 Conflict` — User is already a member of the room.
+* `422 Unprocessable Entity` — Room has reached its maximum `capacity`.
 
 
 
-
-
-### 8.4 Get Room Messages
+### 7.6 Get Room Messages
 
 * **Endpoint:** `GET /api/rooms/{room}/messages`
-* **Description:** Retrieves persisted messages for the specified room in chronological order (`oldest()`), including sender `id` and `name`.
-* **Example Response (`200 OK`):**
+* **Response (`200 OK`):**
 ```json
 {
   "room_id": "01a2072f-3316-7353-9c04-4b2444a96051",
   "data": [
     {
-      "id": "01a2072f-9999-7bbb-87be-aae26e1d1111",
+      "id": "01a2072f-9999-7bbb-87be-aae26e1d1234",
       "room_id": "01a2072f-3316-7353-9c04-4b2444a96051",
       "user_id": "01a2072f-0c92-7a6a-87be-aae26e1d1f39",
       "body": "Hello everyone!",
       "created_at": "2026-11-23T07:05:00.000000Z",
-      "updated_at": "2026-11-23T07:05:00.000000Z",
       "user": {
         "id": "01a2072f-0c92-7a6a-87be-aae26e1d1f39",
         "name": "Budi"
@@ -388,35 +552,32 @@ Recommended header for JSON validation errors: `Accept: application/json`
 
 
 
-### 8.5 Send Message
+### 7.7 Send Message & Broadcast Event
 
 * **Endpoint:** `POST /api/messages`
-* **Description:** Verifies that `user_id` is a member of `room_id`, persists the message in `messages`, and broadcasts `MessageSent` to `chat.room.{room_id}`.
-* **Example Request Body:**
+* **Request Body:**
 ```json
 {
   "room_id": "01a2072f-3316-7353-9c04-4b2444a96051",
-  "user_id": "01a2072f-1111-7aaa-87be-aae26e1d9999",
-  "body": "Hi Budi, real-time chat is working!"
+  "user_id": "01a2072f-0c92-7a6a-87be-aae26e1d1f39",
+  "body": "Hello everyone!"
 }
 
 ```
 
 
-* **Example Response (`201 Created`):**
+* **HTTP Response (`201 Created`):**
 ```json
 {
   "message": "Message sent and broadcasted",
   "data": {
-    "id": "01a2072f-9999-7bbb-87be-aae26e1d2222",
+    "id": "01a2072f-9999-7bbb-87be-aae26e1d1234",
     "room_id": "01a2072f-3316-7353-9c04-4b2444a96051",
-    "user_id": "01a2072f-1111-7aaa-87be-aae26e1d9999",
-    "body": "Hi Budi, real-time chat is working!",
-    "created_at": "2026-11-23T07:06:15.000000Z",
-    "updated_at": "2026-11-23T07:06:15.000000Z",
+    "user_id": "01a2072f-0c92-7a6a-87be-aae26e1d1f39",
+    "body": "Hello everyone!",
     "user": {
-      "id": "01a2072f-1111-7aaa-87be-aae26e1d9999",
-      "name": "Siti"
+      "id": "01a2072f-0c92-7a6a-87be-aae26e1d1f39",
+      "name": "Budi"
     }
   }
 }
@@ -424,10 +585,21 @@ Recommended header for JSON validation errors: `Accept: application/json`
 ```
 
 
-* **Error Response (`403 Forbidden` — user not in room):**
+* **WebSocket Event Payload (`message.sent` on `chat.room.{roomId}`):**
 ```json
 {
-  "message": "User must join the room before sending messages"
+  "id": "01a2072f-9999-7bbb-87be-aae26e1d1234",
+  "room_id": "01a2072f-3316-7353-9c04-4b2444a96051",
+  "body": "Hello everyone!",
+  "created_at": "2026-11-23T07:05:00.000000Z",
+  "user": {
+    "id": "01a2072f-0c92-7a6a-87be-aae26e1d1f39",
+    "name": "Budi"
+  }
 }
 
 ```
+
+
+* **Error Response:**
+* `403 Forbidden` — User is not a member of the room (`User must join the room before sending messages`).

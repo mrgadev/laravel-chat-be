@@ -14,7 +14,7 @@ class MessageController extends Controller
 {
     public function index(Room $room): JsonResponse
     {
-   
+
         $messages = $room->messages()
             ->with('user:id,name')
             ->oldest()
@@ -32,7 +32,7 @@ class MessageController extends Controller
 
         $message = Message::create([
             'room_id' => $room->id,
-            'user_id' => $data['user_id'],
+            'user_id' => $data['user_id'] ?? $request->user()->id,
             'content' => $data['content'],
         ]);
 
