@@ -16,7 +16,7 @@ class UserController extends Controller
             ->select(['id', 'name', 'email', 'created_at'])
             ->latest()
             ->get();
-
+        //  return users data
         return response()->json([
             'data' => $users,
         ]);
