@@ -89,15 +89,6 @@ php artisan reverb:start --debug
 
 ```
 
-
-6. **Run automated feature tests:**
-```bash
-php artisan test
-
-```
-
-
-
 ---
 
 ## 4. Environment Configuration
@@ -128,7 +119,6 @@ REVERB_SCHEME=http
 
 ```
 
-> **Testing Note:** Configure `phpunit.xml` (or `.env.testing`) to use a dedicated testing database or SQLite `:memory:` so `RefreshDatabase` does not wipe local development records.
 
 ---
 
@@ -462,11 +452,7 @@ Common Headers:
 * **Endpoint:** `POST /api/rooms`
 * **Request Body:**
 ```json
-{
-  "name": "Laravel Study Room",
-  "description": "Testing realtime events",
-  "user_id": "01a2072f-0c92-7a6a-87be-aae26e1d1f39"
-}
+
 
 ```
 
@@ -515,7 +501,7 @@ Common Headers:
 
 ### 7.6 Send Message & Broadcast Event
 
-* **Endpoint:** `POST /api/messages`
+* **Endpoint:** `POST /api/rooms/{room}/messages`
 * **Request Body:**
 ```json
 {
