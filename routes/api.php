@@ -12,6 +12,8 @@ Route::post('/users', [UserController::class, 'store']);
 // Rooms
 Route::get('/rooms', [RoomController::class, 'index']);
 Route::post('/rooms', [RoomController::class, 'store']);
+// to joining specific room
+Route::post('/rooms/{room}/join', [RoomController::class, 'join']);
 
 // Messages dalam room
 Route::get('/rooms/{room}/messages', [MessageController::class, 'index']);

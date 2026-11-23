@@ -55,6 +55,7 @@ class User extends Authenticatable
 
     public function rooms() {
         return $this->belongsToMany(Room::class)
+        ->using(RoomUser::class)
         ->withPivot(['last_read_at'])
         ->withTimestamps();
     }
